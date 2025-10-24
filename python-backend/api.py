@@ -3,17 +3,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from uuid import uuid4
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import time
 import logging
 
-from main import (
-    triage_agent,
-    faq_agent,
-    seat_booking_agent,
-    flight_status_agent,
-    cancellation_agent,
+from domain import (
+    CONTEXT_CLASS,
     create_initial_context,
 )
+from loader import build_dynamic_registry, DynamicRegistry
+from db import init_schema
+from seed import seed_if_empty
+from admin import router as admin_router
 
 from agents import (
     Runner,
@@ -27,10 +32,15 @@ from agents import (
 )
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+# Increase OpenAI SDK verbosity if available
+if not os.getenv("OPENAI_LOG"):
+    os.environ["OPENAI_LOG"] = "debug"
+
 app = FastAPI()
+_registry: DynamicRegistry | None = None
 
 # CORS configuration (adjust as needed for deployment)
 app.add_middleware(
@@ -40,6 +50,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(admin_router)
 
 # =========================
 # Models
@@ -102,19 +114,16 @@ class InMemoryConversationStore(ConversationStore):
 conversation_store = InMemoryConversationStore()
 
 # =========================
-# Helpers
+# Helpers / Initialization
 # =========================
 
 def _get_agent_by_name(name: str):
-    """Return the agent object by name."""
-    agents = {
-        triage_agent.name: triage_agent,
-        faq_agent.name: faq_agent,
-        seat_booking_agent.name: seat_booking_agent,
-        flight_status_agent.name: flight_status_agent,
-        cancellation_agent.name: cancellation_agent,
-    }
-    return agents.get(name, triage_agent)
+    assert _registry is not None, "Registry not initialized"
+    try:
+        return _registry.get(name)
+    except KeyError:
+        # Default to triage if not found
+        return _registry.get("Triage Agent")
 
 def _get_guardrail_name(g) -> str:
     """Extract a friendly guardrail name."""
@@ -131,6 +140,7 @@ def _get_guardrail_name(g) -> str:
 
 def _build_agents_list() -> List[Dict[str, Any]]:
     """Build a list of all available agents and their metadata."""
+    assert _registry is not None, "Registry not initialized"
     def make_agent_dict(agent):
         return {
             "name": agent.name,
@@ -139,13 +149,22 @@ def _build_agents_list() -> List[Dict[str, Any]]:
             "tools": [getattr(t, "name", getattr(t, "__name__", "")) for t in getattr(agent, "tools", [])],
             "input_guardrails": [_get_guardrail_name(g) for g in getattr(agent, "input_guardrails", [])],
         }
-    return [
-        make_agent_dict(triage_agent),
-        make_agent_dict(faq_agent),
-        make_agent_dict(seat_booking_agent),
-        make_agent_dict(flight_status_agent),
-        make_agent_dict(cancellation_agent),
-    ]
+    return [make_agent_dict(a) for a in _registry.list_all()]
+
+
+@app.on_event("startup")
+async def _on_startup():
+    global _registry
+    await init_schema()
+    await seed_if_empty()
+    _registry = await build_dynamic_registry()
+
+
+@app.post("/admin/reload")
+async def _admin_reload():
+    global _registry
+    _registry = await build_dynamic_registry()
+    return {"ok": True}
 
 # =========================
 # Main Chat Endpoint
@@ -162,7 +181,7 @@ async def chat_endpoint(req: ChatRequest):
     if is_new:
         conversation_id: str = uuid4().hex
         ctx = create_initial_context()
-        current_agent_name = triage_agent.name
+        current_agent_name = "Triage Agent"
         state: Dict[str, Any] = {
             "input_items": [],
             "context": ctx,
@@ -189,6 +208,19 @@ async def chat_endpoint(req: ChatRequest):
     guardrail_checks: List[GuardrailCheck] = []
 
     try:
+        # Debug: log outgoing agent call
+        agent_model = getattr(current_agent, "model", None)
+        agent_instr = getattr(current_agent, "instructions", None)
+        logger.info("Agent call → name=%s model=%s", current_agent.name, agent_model)
+        try:
+            if isinstance(agent_instr, str):
+                logger.debug("Agent instructions (text)=%s", agent_instr)
+            else:
+                logger.debug("Agent instructions is callable; will be resolved by Runner")
+        except Exception:
+            pass
+        logger.debug("Input items=%s", state["input_items"])
+
         result = await Runner.run(current_agent, state["input_items"], context=state["context"])
     except InputGuardrailTripwireTriggered as e:
         failed = e.guardrail_result.guardrail
@@ -196,6 +228,13 @@ async def chat_endpoint(req: ChatRequest):
         gr_reasoning = getattr(gr_output, "reasoning", "")
         gr_input = req.message
         gr_timestamp = time.time() * 1000
+        try:
+            logger.warning(
+                "Guardrail tripped → guardrail=%s input=%s reasoning=%s",
+                _get_guardrail_name(failed), gr_input, gr_reasoning,
+            )
+        except Exception:
+            logger.warning("Guardrail tripped (logging details failed)")
         for g in current_agent.input_guardrails:
             guardrail_checks.append(GuardrailCheck(
                 id=uuid4().hex,
@@ -225,8 +264,10 @@ async def chat_endpoint(req: ChatRequest):
             text = ItemHelpers.text_message_output(item)
             messages.append(MessageResponse(content=text, agent=item.agent.name))
             events.append(AgentEvent(id=uuid4().hex, type="message", agent=item.agent.name, content=text))
+            logger.debug("Message from agent=%s content=%s", item.agent.name, text)
         # Handle handoff output and agent switching
         elif isinstance(item, HandoffOutputItem):
+            logger.info("Handoff → %s → %s", item.source_agent.name, item.target_agent.name)
             # Record the handoff event
             events.append(
                 AgentEvent(
@@ -283,6 +324,7 @@ async def chat_endpoint(req: ChatRequest):
                     metadata={"tool_args": tool_args},
                 )
             )
+            logger.info("Tool call → agent=%s tool=%s args=%s", item.agent.name, tool_name, tool_args)
             # If the tool is display_seat_map, send a special message so the UI can render the seat selector.
             if tool_name == "display_seat_map":
                 messages.append(
@@ -301,6 +343,7 @@ async def chat_endpoint(req: ChatRequest):
                     metadata={"tool_result": item.output},
                 )
             )
+            logger.info("Tool output ← agent=%s output=%s", item.agent.name, item.output)
 
     new_context = state["context"].dict()
     changes = {k: new_context[k] for k in new_context if old_context.get(k) != new_context[k]}

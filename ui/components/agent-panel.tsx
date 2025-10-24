@@ -37,8 +37,9 @@ export function AgentPanel({
         <Bot className="h-5 w-5" />
         <h1 className="font-semibold text-sm sm:text-base lg:text-lg">Agent View</h1>
         <span className="ml-auto text-xs font-light tracking-wide opacity-80">
-          Airline&nbsp;Co.
+         Agent-C
         </span>
+        <a href="/admin" className="ml-3 text-xs underline hover:opacity-80">Admin</a>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 bg-gray-50/50">

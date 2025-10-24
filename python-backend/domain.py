@@ -1,12 +1,10 @@
 from __future__ import annotations as _annotations
 
 import random
-from pydantic import BaseModel
 import string
+from typing import Callable, Awaitable
 
-from dotenv import load_dotenv
-
-load_dotenv()
+from pydantic import BaseModel
 
 from agents import (
     Agent,
@@ -20,38 +18,36 @@ from agents import (
 )
 from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
 
+
 # =========================
 # CONTEXT
 # =========================
 
+
 class AirlineAgentContext(BaseModel):
-    """Context for airline customer service agents."""
     passenger_name: str | None = None
     confirmation_number: str | None = None
     seat_number: str | None = None
     flight_number: str | None = None
-    account_number: str | None = None  # Account number associated with the customer
+    account_number: str | None = None
     ticket_number: str | None = None
 
+
 def create_initial_context() -> AirlineAgentContext:
-    """
-    Factory for a new AirlineAgentContext.
-    For demo: generates a fake account number.
-    In production, this should be set from real user data.
-    """
     ctx = AirlineAgentContext()
     ctx.account_number = str(random.randint(10000000, 99999999))
     return ctx
 
+
 # =========================
-# TOOLS
+# TOOLS (Executable implementations live in code; metadata/assignment lives in DB)
 # =========================
+
 
 @function_tool(
     name_override="faq_lookup_tool", description_override="Lookup frequently asked questions."
 )
 async def faq_lookup_tool(question: str) -> str:
-    """Lookup answers to frequently asked questions."""
     q = question.lower()
     if "bag" in q or "baggage" in q:
         return (
@@ -69,36 +65,37 @@ async def faq_lookup_tool(question: str) -> str:
         return "We have free wifi on the plane, join Airline-Wifi"
     return "I'm sorry, I don't know the answer to that question."
 
+
 @function_tool
 async def update_seat(
     context: RunContextWrapper[AirlineAgentContext], confirmation_number: str, new_seat: str
 ) -> str:
-    """Update the seat for a given confirmation number."""
     context.context.confirmation_number = confirmation_number
     context.context.seat_number = new_seat
     assert context.context.flight_number is not None, "Flight number is required"
     return f"Updated seat to {new_seat} for confirmation number {confirmation_number}"
+
 
 @function_tool(
     name_override="flight_status_tool",
     description_override="Lookup status for a flight."
 )
 async def flight_status_tool(flight_number: str) -> str:
-    """Lookup the status for a flight."""
     return f"Flight {flight_number} is on time and scheduled to depart at gate A10."
+
 
 @function_tool(
     name_override="baggage_tool",
     description_override="Lookup baggage allowance and fees."
 )
 async def baggage_tool(query: str) -> str:
-    """Lookup baggage allowance and fees."""
     q = query.lower()
     if "fee" in q:
         return "Overweight bag fee is $75."
     if "allowance" in q:
         return "One carry-on and one checked bag (up to 50 lbs) are included."
     return "Please provide details about your baggage inquiry."
+
 
 @function_tool(
     name_override="display_seat_map",
@@ -107,27 +104,42 @@ async def baggage_tool(query: str) -> str:
 async def display_seat_map(
     context: RunContextWrapper[AirlineAgentContext]
 ) -> str:
-    """Trigger the UI to show an interactive seat map to the customer."""
-    # The returned string will be interpreted by the UI to open the seat selector.
     return "DISPLAY_SEAT_MAP"
 
-# =========================
-# HOOKS
-# =========================
 
-async def on_seat_booking_handoff(context: RunContextWrapper[AirlineAgentContext]) -> None:
-    """Set a random flight number when handed off to the seat booking agent."""
-    context.context.flight_number = f"FLT-{random.randint(100, 999)}"
-    context.context.confirmation_number = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+@function_tool(
+    name_override="cancel_flight",
+    description_override="Cancel a flight."
+)
+async def cancel_flight(
+    context: RunContextWrapper[AirlineAgentContext]
+) -> str:
+    fn = context.context.flight_number
+    assert fn is not None, "Flight number is required"
+    return f"Flight {fn} successfully cancelled"
+
+
+# Expose a registry for dynamic wiring
+TOOL_REGISTRY: dict[str, Callable[..., Awaitable[str]]]
+TOOL_REGISTRY = {
+    "faq_lookup_tool": faq_lookup_tool,
+    "update_seat": update_seat,
+    "flight_status_tool": flight_status_tool,
+    "baggage_tool": baggage_tool,
+    "display_seat_map": display_seat_map,
+    "cancel_flight": cancel_flight,
+}
+
 
 # =========================
 # GUARDRAILS
 # =========================
 
+
 class RelevanceOutput(BaseModel):
-    """Schema for relevance guardrail decisions."""
     reasoning: str
     is_relevant: bool
+
 
 guardrail_agent = Agent(
     model="gpt-4.1-mini",
@@ -143,19 +155,20 @@ guardrail_agent = Agent(
     output_type=RelevanceOutput,
 )
 
+
 @input_guardrail(name="Relevance Guardrail")
 async def relevance_guardrail(
     context: RunContextWrapper[None], agent: Agent, input: str | list[TResponseInputItem]
 ) -> GuardrailFunctionOutput:
-    """Guardrail to check if input is relevant to airline topics."""
     result = await Runner.run(guardrail_agent, input, context=context.context)
     final = result.final_output_as(RelevanceOutput)
     return GuardrailFunctionOutput(output_info=final, tripwire_triggered=not final.is_relevant)
 
+
 class JailbreakOutput(BaseModel):
-    """Schema for jailbreak guardrail decisions."""
     reasoning: str
     is_safe: bool
+
 
 jailbreak_guardrail_agent = Agent(
     name="Jailbreak Guardrail",
@@ -173,18 +186,26 @@ jailbreak_guardrail_agent = Agent(
     output_type=JailbreakOutput,
 )
 
+
 @input_guardrail(name="Jailbreak Guardrail")
 async def jailbreak_guardrail(
     context: RunContextWrapper[None], agent: Agent, input: str | list[TResponseInputItem]
 ) -> GuardrailFunctionOutput:
-    """Guardrail to detect jailbreak attempts."""
     result = await Runner.run(jailbreak_guardrail_agent, input, context=context.context)
     final = result.final_output_as(JailbreakOutput)
     return GuardrailFunctionOutput(output_info=final, tripwire_triggered=not final.is_safe)
 
+
+GUARDRAIL_REGISTRY = {
+    "relevance_guardrail": relevance_guardrail,
+    "jailbreak_guardrail": jailbreak_guardrail,
+}
+
+
 # =========================
-# AGENTS
+# INSTRUCTION PROVIDERS
 # =========================
+
 
 def seat_booking_instructions(
     run_context: RunContextWrapper[AirlineAgentContext], agent: Agent[AirlineAgentContext]
@@ -195,21 +216,13 @@ def seat_booking_instructions(
         f"{RECOMMENDED_PROMPT_PREFIX}\n"
         "You are a seat booking agent. If you are speaking to a customer, you probably were transferred to from the triage agent.\n"
         "Use the following routine to support the customer.\n"
-        f"1. The customer's confirmation number is {confirmation}."+
+        f"1. The customer's confirmation number is {confirmation}. "
         "If this is not available, ask the customer for their confirmation number. If you have it, confirm that is the confirmation number they are referencing.\n"
         "2. Ask the customer what their desired seat number is. You can also use the display_seat_map tool to show them an interactive seat map where they can click to select their preferred seat.\n"
         "3. Use the update seat tool to update the seat on the flight.\n"
         "If the customer asks a question that is not related to the routine, transfer back to the triage agent."
     )
 
-seat_booking_agent = Agent[AirlineAgentContext](
-    name="Seat Booking Agent",
-    model="gpt-4.1",
-    handoff_description="A helpful agent that can update a seat on a flight.",
-    instructions=seat_booking_instructions,
-    tools=[update_seat, display_seat_map],
-    input_guardrails=[relevance_guardrail, jailbreak_guardrail],
-)
 
 def flight_status_instructions(
     run_context: RunContextWrapper[AirlineAgentContext], agent: Agent[AirlineAgentContext]
@@ -226,38 +239,6 @@ def flight_status_instructions(
         "If the customer asks a question that is not related to flight status, transfer back to the triage agent."
     )
 
-flight_status_agent = Agent[AirlineAgentContext](
-    name="Flight Status Agent",
-    model="gpt-4.1",
-    handoff_description="An agent to provide flight status information.",
-    instructions=flight_status_instructions,
-    tools=[flight_status_tool],
-    input_guardrails=[relevance_guardrail, jailbreak_guardrail],
-)
-
-# Cancellation tool and agent
-@function_tool(
-    name_override="cancel_flight",
-    description_override="Cancel a flight."
-)
-async def cancel_flight(
-    context: RunContextWrapper[AirlineAgentContext]
-) -> str:
-    """Cancel the flight in the context."""
-    fn = context.context.flight_number
-    assert fn is not None, "Flight number is required"
-    return f"Flight {fn} successfully cancelled"
-
-async def on_cancellation_handoff(
-    context: RunContextWrapper[AirlineAgentContext]
-) -> None:
-    """Ensure context has a confirmation and flight number when handing off to cancellation."""
-    if context.context.confirmation_number is None:
-        context.context.confirmation_number = "".join(
-            random.choices(string.ascii_uppercase + string.digits, k=6)
-        )
-    if context.context.flight_number is None:
-        context.context.flight_number = f"FLT-{random.randint(100, 999)}"
 
 def cancellation_instructions(
     run_context: RunContextWrapper[AirlineAgentContext], agent: Agent[AirlineAgentContext]
@@ -274,49 +255,57 @@ def cancellation_instructions(
         "If the customer asks anything else, transfer back to the triage agent."
     )
 
-cancellation_agent = Agent[AirlineAgentContext](
-    name="Cancellation Agent",
-    model="gpt-4.1",
-    handoff_description="An agent to cancel flights.",
-    instructions=cancellation_instructions,
-    tools=[cancel_flight],
-    input_guardrails=[relevance_guardrail, jailbreak_guardrail],
+
+TRIAGE_INSTRUCTIONS: str = (
+    f"{RECOMMENDED_PROMPT_PREFIX} "
+    "You are a helpful triaging agent. You can use your tools to delegate questions to other appropriate agents."
 )
 
-faq_agent = Agent[AirlineAgentContext](
-    name="FAQ Agent",
-    model="gpt-4.1",
-    handoff_description="A helpful agent that can answer questions about the airline.",
-    instructions=f"""{RECOMMENDED_PROMPT_PREFIX}
-    You are an FAQ agent. If you are speaking to a customer, you probably were transferred to from the triage agent.
-    Use the following routine to support the customer.
-    1. Identify the last question asked by the customer.
-    2. Use the faq lookup tool to get the answer. Do not rely on your own knowledge.
-    3. Respond to the customer with the answer""",
-    tools=[faq_lookup_tool],
-    input_guardrails=[relevance_guardrail, jailbreak_guardrail],
-)
+FAQ_INSTRUCTIONS: str = f"""{RECOMMENDED_PROMPT_PREFIX}
+You are an FAQ agent. If you are speaking to a customer, you probably were transferred to from the triage agent.
+Use the following routine to support the customer.
+1. Identify the last question asked by the customer.
+2. Use the faq lookup tool to get the answer. Do not rely on your own knowledge.
+3. Respond to the customer with the answer"""
 
-triage_agent = Agent[AirlineAgentContext](
-    name="Triage Agent",
-    model="gpt-4.1",
-    handoff_description="A triage agent that can delegate a customer's request to the appropriate agent.",
-    instructions=(
-        f"{RECOMMENDED_PROMPT_PREFIX} "
-        "You are a helpful triaging agent. You can use your tools to delegate questions to other appropriate agents."
-    ),
-    handoffs=[
-        flight_status_agent,
-        handoff(agent=cancellation_agent, on_handoff=on_cancellation_handoff),
-        faq_agent,
-        handoff(agent=seat_booking_agent, on_handoff=on_seat_booking_handoff),
-    ],
-    input_guardrails=[relevance_guardrail, jailbreak_guardrail],
-)
 
-# Set up handoff relationships
-faq_agent.handoffs.append(triage_agent)
-seat_booking_agent.handoffs.append(triage_agent)
-flight_status_agent.handoffs.append(triage_agent)
-# Add cancellation agent handoff back to triage
-cancellation_agent.handoffs.append(triage_agent)
+INSTRUCTION_REGISTRY: dict[str, str | Callable[..., str]] = {
+    "triage": TRIAGE_INSTRUCTIONS,
+    "faq": FAQ_INSTRUCTIONS,
+    "seat_booking": seat_booking_instructions,
+    "flight_status": flight_status_instructions,
+    "cancellation": cancellation_instructions,
+}
+
+
+# =========================
+# HANDOFF CALLBACKS
+# =========================
+
+
+async def on_seat_booking_handoff(context: RunContextWrapper[AirlineAgentContext]) -> None:
+    context.context.flight_number = f"FLT-{random.randint(100, 999)}"
+    context.context.confirmation_number = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+
+async def on_cancellation_handoff(
+    context: RunContextWrapper[AirlineAgentContext]
+) -> None:
+    if context.context.confirmation_number is None:
+        context.context.confirmation_number = "".join(
+            random.choices(string.ascii_uppercase + string.digits, k=6)
+        )
+    if context.context.flight_number is None:
+        context.context.flight_number = f"FLT-{random.randint(100, 999)}"
+
+
+HANDOFF_CALLBACK_REGISTRY: dict[str, Callable[[RunContextWrapper[AirlineAgentContext]], Awaitable[None]]] = {
+    "on_seat_booking_handoff": on_seat_booking_handoff,
+    "on_cancellation_handoff": on_cancellation_handoff,
+}
+
+
+# Expose context symbols for consumers
+CONTEXT_CLASS = AirlineAgentContext
+
+
