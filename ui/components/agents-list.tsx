@@ -2,7 +2,7 @@
 
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Bot } from "lucide-react";
+import { Bot, Crown } from "lucide-react";
 import { PanelSection } from "./panel-section";
 import type { Agent } from "@/lib/types";
 
@@ -32,7 +32,10 @@ export function AgentsList({ agents, currentAgent }: AgentsListProps) {
             }`}
           >
             <CardHeader className="p-3 pb-1">
-              <CardTitle className="text-sm flex items-center text-zinc-900">
+              <CardTitle className="text-sm flex items-center text-zinc-900 gap-1">
+                {agent.is_triage && (
+                  <span title="Triage (master)"><Crown className="h-4 w-4 text-amber-500" /></span>
+                )}
                 {agent.name}
               </CardTitle>
             </CardHeader>

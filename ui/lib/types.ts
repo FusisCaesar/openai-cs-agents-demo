@@ -13,6 +13,8 @@ export interface Agent {
   tools: string[]
   /** List of input guardrail identifiers for this agent */
   input_guardrails: string[]
+  /** Optional indicator this is the selected triage (master) agent */
+  is_triage?: boolean
 }
 
 export type EventType = "message" | "handoff" | "tool_call" | "tool_output" | "context_update"

@@ -19,6 +19,9 @@ interface AgentPanelProps {
     flight_number?: string;
     account_number?: string;
   };
+  triageOptions?: string[];
+  triageName?: string | null;
+  onChangeTriage?: (name: string) => void;
 }
 
 export function AgentPanel({
@@ -27,6 +30,9 @@ export function AgentPanel({
   events,
   guardrails,
   context,
+  triageOptions = [],
+  triageName,
+  onChangeTriage,
 }: AgentPanelProps) {
   const activeAgent = agents.find((a) => a.name === currentAgent);
   const runnerEvents = events.filter((e) => e.type !== "message");
@@ -36,9 +42,21 @@ export function AgentPanel({
       <div className="bg-blue-600 text-white h-12 px-4 flex items-center gap-3 shadow-sm rounded-t-xl">
         <Bot className="h-5 w-5" />
         <h1 className="font-semibold text-sm sm:text-base lg:text-lg">Agent View</h1>
-        <span className="ml-auto text-xs font-light tracking-wide opacity-80">
-         Agent-C
-        </span>
+        {/* Triage selector */}
+        {onChangeTriage && (
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-xs opacity-80">Triage</span>
+            <select
+              className="text-xs bg-white/10 hover:bg-white/20 border border-white/30 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-white/40"
+              value={triageName ?? ""}
+              onChange={(e) => onChangeTriage(e.target.value)}
+            >
+              {(triageOptions.length ? triageOptions : ["Triage Agent"]).map((t) => (
+                <option key={t} value={t} className="text-black">{t}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <a href="/admin" className="ml-3 text-xs underline hover:opacity-80">Admin</a>
       </div>
 

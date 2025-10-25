@@ -4,6 +4,25 @@ export async function getAdminState() {
   return res.json();
 }
 
+export async function getContextDefaults(triage_name?: string) {
+  const url = triage_name
+    ? `/admin/context?triage_name=${encodeURIComponent(triage_name)}`
+    : "/admin/context";
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Failed to fetch context defaults: ${res.status}`);
+  return res.json();
+}
+
+export async function updateContextDefaults(defaults: any, triage_name?: string) {
+  const res = await fetch(`/admin/context`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ triage_name: triage_name || "__global__", defaults }),
+  });
+  if (!res.ok) throw new Error(`Failed to update context defaults: ${res.status}`);
+  return res.json();
+}
+
 export async function reloadRegistry() {
   const res = await fetch("/admin/reload", { method: "POST" });
   if (!res.ok) throw new Error(`Failed to reload: ${res.status}`);
@@ -46,6 +65,16 @@ export async function createTool(payload: any) {
   return res.json();
 }
 
+export async function updateTool(name: string, payload: any) {
+  const res = await fetch(`/admin/tools/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`Failed to update tool: ${res.status}`);
+  return res.json();
+}
+
 export async function deleteTool(name: string) {
   const res = await fetch(`/admin/tools/${encodeURIComponent(name)}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`Failed to delete tool: ${res.status}`);
@@ -59,6 +88,16 @@ export async function createGuardrail(payload: any) {
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`Failed to create guardrail: ${res.status}`);
+  return res.json();
+}
+
+export async function updateGuardrail(name: string, payload: any) {
+  const res = await fetch(`/admin/guardrails/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`Failed to update guardrail: ${res.status}`);
   return res.json();
 }
 
@@ -109,6 +148,16 @@ export async function createHandoff(payload: { source_agent: string; target_agen
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`Failed to create handoff: ${res.status}`);
+  return res.json();
+}
+
+export async function updateHandoff(payload: { source_agent: string; target_agent: string; on_handoff_callback?: string | null }) {
+  const res = await fetch("/admin/handoffs", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`Failed to update handoff: ${res.status}`);
   return res.json();
 }
 

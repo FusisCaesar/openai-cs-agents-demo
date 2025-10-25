@@ -31,7 +31,8 @@ async def init_schema() -> None:
                 model text not null,
                 handoff_description text,
                 instruction_type text not null check (instruction_type in ('text','provider')),
-                instruction_value text not null
+                instruction_value text not null,
+                is_triage boolean not null default false
             );
 
             create table if not exists tools (
@@ -63,6 +64,11 @@ async def init_schema() -> None:
                 target_agent_id integer not null references agents(id) on delete cascade,
                 on_handoff_callback text,
                 primary key (source_agent_id, target_agent_id)
+            );
+
+            create table if not exists app_contexts (
+                triage_name text primary key,
+                defaults text
             );
             """
         )

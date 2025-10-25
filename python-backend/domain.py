@@ -4,7 +4,7 @@ import random
 import string
 from typing import Callable, Awaitable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from agents import (
     Agent,
@@ -24,19 +24,14 @@ from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
 # =========================
 
 
-class AirlineAgentContext(BaseModel):
-    passenger_name: str | None = None
-    confirmation_number: str | None = None
-    seat_number: str | None = None
-    flight_number: str | None = None
-    account_number: str | None = None
-    ticket_number: str | None = None
+class AgentContext(BaseModel):
+    # Dynamic, user-defined context. Accept arbitrary keys.
+    model_config = ConfigDict(extra='allow')
 
 
-def create_initial_context() -> AirlineAgentContext:
-    ctx = AirlineAgentContext()
-    ctx.account_number = str(random.randint(10000000, 99999999))
-    return ctx
+def create_initial_context() -> AgentContext:
+    # Legacy helper; no hardcoded defaults
+    return AgentContext()
 
 
 # =========================
@@ -68,7 +63,7 @@ async def faq_lookup_tool(question: str) -> str:
 
 @function_tool
 async def update_seat(
-    context: RunContextWrapper[AirlineAgentContext], confirmation_number: str, new_seat: str
+    context: RunContextWrapper[AgentContext], confirmation_number: str, new_seat: str
 ) -> str:
     context.context.confirmation_number = confirmation_number
     context.context.seat_number = new_seat
@@ -102,7 +97,7 @@ async def baggage_tool(query: str) -> str:
     description_override="Display an interactive seat map to the customer so they can choose a new seat."
 )
 async def display_seat_map(
-    context: RunContextWrapper[AirlineAgentContext]
+    context: RunContextWrapper[AgentContext]
 ) -> str:
     return "DISPLAY_SEAT_MAP"
 
@@ -112,7 +107,7 @@ async def display_seat_map(
     description_override="Cancel a flight."
 )
 async def cancel_flight(
-    context: RunContextWrapper[AirlineAgentContext]
+    context: RunContextWrapper[AgentContext]
 ) -> str:
     fn = context.context.flight_number
     assert fn is not None, "Flight number is required"
@@ -208,7 +203,7 @@ GUARDRAIL_REGISTRY = {
 
 
 def seat_booking_instructions(
-    run_context: RunContextWrapper[AirlineAgentContext], agent: Agent[AirlineAgentContext]
+    run_context: RunContextWrapper[AgentContext], agent: Agent[AgentContext]
 ) -> str:
     ctx = run_context.context
     confirmation = ctx.confirmation_number or "[unknown]"
@@ -225,7 +220,7 @@ def seat_booking_instructions(
 
 
 def flight_status_instructions(
-    run_context: RunContextWrapper[AirlineAgentContext], agent: Agent[AirlineAgentContext]
+    run_context: RunContextWrapper[AgentContext], agent: Agent[AgentContext]
 ) -> str:
     ctx = run_context.context
     confirmation = ctx.confirmation_number or "[unknown]"
@@ -241,7 +236,7 @@ def flight_status_instructions(
 
 
 def cancellation_instructions(
-    run_context: RunContextWrapper[AirlineAgentContext], agent: Agent[AirlineAgentContext]
+    run_context: RunContextWrapper[AgentContext], agent: Agent[AgentContext]
 ) -> str:
     ctx = run_context.context
     confirmation = ctx.confirmation_number or "[unknown]"
@@ -283,13 +278,13 @@ INSTRUCTION_REGISTRY: dict[str, str | Callable[..., str]] = {
 # =========================
 
 
-async def on_seat_booking_handoff(context: RunContextWrapper[AirlineAgentContext]) -> None:
+async def on_seat_booking_handoff(context: RunContextWrapper[AgentContext]) -> None:
     context.context.flight_number = f"FLT-{random.randint(100, 999)}"
     context.context.confirmation_number = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
 
 async def on_cancellation_handoff(
-    context: RunContextWrapper[AirlineAgentContext]
+    context: RunContextWrapper[AgentContext]
 ) -> None:
     if context.context.confirmation_number is None:
         context.context.confirmation_number = "".join(
@@ -299,13 +294,13 @@ async def on_cancellation_handoff(
         context.context.flight_number = f"FLT-{random.randint(100, 999)}"
 
 
-HANDOFF_CALLBACK_REGISTRY: dict[str, Callable[[RunContextWrapper[AirlineAgentContext]], Awaitable[None]]] = {
+HANDOFF_CALLBACK_REGISTRY: dict[str, Callable[[RunContextWrapper[AgentContext]], Awaitable[None]]] = {
     "on_seat_booking_handoff": on_seat_booking_handoff,
     "on_cancellation_handoff": on_cancellation_handoff,
 }
 
 
 # Expose context symbols for consumers
-CONTEXT_CLASS = AirlineAgentContext
+CONTEXT_CLASS = AgentContext
 
 

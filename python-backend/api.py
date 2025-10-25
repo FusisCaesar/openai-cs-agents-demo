@@ -13,10 +13,9 @@ import logging
 
 from domain import (
     CONTEXT_CLASS,
-    create_initial_context,
 )
 from loader import build_dynamic_registry, DynamicRegistry
-from db import init_schema
+from db import init_schema, fetchrow
 from seed import seed_if_empty
 from admin import router as admin_router
 
@@ -60,6 +59,7 @@ app.include_router(admin_router)
 class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     message: str
+    triage_name: Optional[str] = None
 
 class MessageResponse(BaseModel):
     content: str
@@ -180,8 +180,19 @@ async def chat_endpoint(req: ChatRequest):
     is_new = not req.conversation_id or conversation_store.get(req.conversation_id) is None
     if is_new:
         conversation_id: str = uuid4().hex
-        ctx = create_initial_context()
-        current_agent_name = "Triage Agent"
+        # Load defaults from DB and construct context dynamically
+        ctx_defaults: Dict[str, Any] = {}
+        try:
+            tn = req.triage_name or "__global__"
+            row = await fetchrow("select defaults from app_contexts where triage_name=$1", tn)
+            if row and row.get("defaults"):
+                import json
+                raw = row["defaults"]
+                ctx_defaults = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            ctx_defaults = {}
+        ctx = CONTEXT_CLASS(**ctx_defaults)
+        current_agent_name = req.triage_name or "Triage Agent"
         state: Dict[str, Any] = {
             "input_items": [],
             "context": ctx,

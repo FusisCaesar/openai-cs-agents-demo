@@ -16,6 +16,7 @@ class AgentCreate(BaseModel):
     handoff_description: Optional[str] = None
     instruction_type: str = Field(pattern="^(text|provider)$")
     instruction_value: str
+    is_triage: bool = False
 
 
 class AgentUpdate(BaseModel):
@@ -23,11 +24,17 @@ class AgentUpdate(BaseModel):
     handoff_description: Optional[str] = None
     instruction_type: Optional[str] = Field(default=None, pattern="^(text|provider)$")
     instruction_value: Optional[str] = None
+    is_triage: Optional[bool] = None
 
 
 class ToolCreate(BaseModel):
     name: str
     code_name: str
+    description: Optional[str] = None
+
+
+class ToolUpdate(BaseModel):
+    code_name: Optional[str] = None
     description: Optional[str] = None
 
 
@@ -50,6 +57,11 @@ class AgentGuardrailLink(BaseModel):
 
 
 class HandoffCreate(BaseModel):
+    source_agent: str
+    target_agent: str
+    on_handoff_callback: Optional[str] = None
+
+class HandoffUpdate(BaseModel):
     source_agent: str
     target_agent: str
     on_handoff_callback: Optional[str] = None
@@ -95,6 +107,7 @@ async def state() -> dict[str, Any]:
         order by a.name, ag.guardrail_name
         """
     )]
+    triage_agents = [a["name"] for a in agents if a.get("is_triage")]
     return {
         "agents": agents,
         "tools": tools,
@@ -102,14 +115,15 @@ async def state() -> dict[str, Any]:
         "handoffs": handoffs,
         "agent_tools": agent_tools,
         "agent_guardrails": agent_guardrails,
+        "triage_agents": triage_agents,
     }
 
 
 @router.post("/agents")
 async def create_agent(body: AgentCreate) -> dict[str, Any]:
     await execute(
-        "insert into agents(name, model, handoff_description, instruction_type, instruction_value) values($1,$2,$3,$4,$5)",
-        body.name, body.model, body.handoff_description, body.instruction_type, body.instruction_value,
+        "insert into agents(name, model, handoff_description, instruction_type, instruction_value, is_triage) values($1,$2,$3,$4,$5,$6)",
+        body.name, body.model, body.handoff_description, body.instruction_type, body.instruction_value, body.is_triage,
     )
     return {"ok": True}
 
@@ -130,6 +144,9 @@ async def update_agent(name: str, body: AgentUpdate) -> dict[str, Any]:
     if body.instruction_value is not None:
         fields.append("instruction_value=$%d" % (len(args) + 1))
         args.append(body.instruction_value)
+    if body.is_triage is not None:
+        fields.append("is_triage=$%d" % (len(args) + 1))
+        args.append(body.is_triage)
     if not fields:
         return {"ok": True}
     args.append(name)
@@ -150,6 +167,24 @@ async def create_tool(body: ToolCreate) -> dict[str, Any]:
         "insert into tools(name, code_name, description) values($1,$2,$3)",
         body.name, body.code_name, body.description,
     )
+    return {"ok": True}
+
+
+@router.patch("/tools/{name}")
+async def update_tool(name: str, body: ToolUpdate) -> dict[str, Any]:
+    fields: list[str] = []
+    args: list[Any] = []
+    if body.code_name is not None:
+        fields.append("code_name=$%d" % (len(args) + 1))
+        args.append(body.code_name)
+    if body.description is not None:
+        fields.append("description=$%d" % (len(args) + 1))
+        args.append(body.description)
+    if not fields:
+        return {"ok": True}
+    args.append(name)
+    set_sql = ", ".join(fields)
+    await execute(f"update tools set {set_sql} where name=$%d" % (len(args)), *args)
     return {"ok": True}
 
 
@@ -242,6 +277,17 @@ async def create_handoff(body: HandoffCreate) -> dict[str, Any]:
     return {"ok": True}
 
 
+@router.patch("/handoffs")
+async def update_handoff(body: HandoffUpdate) -> dict[str, Any]:
+    sid = await _agent_id(body.source_agent)
+    tid = await _agent_id(body.target_agent)
+    await execute(
+        "update handoffs set on_handoff_callback=$3 where source_agent_id=$1 and target_agent_id=$2",
+        sid, tid, body.on_handoff_callback,
+    )
+    return {"ok": True}
+
+
 @router.delete("/handoffs")
 async def delete_handoff(source_agent: str, target_agent: str) -> dict[str, Any]:
     sid = await _agent_id(source_agent)
@@ -250,9 +296,35 @@ async def delete_handoff(source_agent: str, target_agent: str) -> dict[str, Any]
     return {"ok": True}
 
 
-@router.post("/reload")
-async def reload_registry() -> dict[str, Any]:
-    # Endpoint exists; actual registry replacement is handled in api.py via dependency on this call
+# Note: reload is handled in api.py to ensure the global registry is actually rebuilt.
+
+
+class AppContext(BaseModel):
+    triage_name: str
+    defaults: dict[str, Any]
+
+
+@router.get("/context")
+async def get_context_defaults(triage_name: str = "__global__") -> dict[str, Any]:
+    import json
+    row = await fetchrow("select defaults from app_contexts where triage_name=$1", triage_name)
+    if not row or not row.get("defaults"):
+        return {"defaults": {}}
+    raw = row["defaults"]
+    if isinstance(raw, str):
+        try:
+            return {"defaults": json.loads(raw)}
+        except Exception:
+            return {"defaults": {}}
+    return {"defaults": raw}
+
+
+@router.put("/context")
+async def update_context_defaults(body: AppContext) -> dict[str, Any]:
+    # store as json text
+    import json
+    text = json.dumps(body.defaults)
+    await execute("insert into app_contexts(triage_name, defaults) values($1,$2) on conflict (triage_name) do update set defaults=excluded.defaults", body.triage_name, text)
     return {"ok": True}
 
 
