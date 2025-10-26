@@ -31,7 +31,7 @@ export function AgentsList({ agents, currentAgent }: AgentsListProps) {
               agent.name === currentAgent ? "ring-1 ring-blue-500 shadow-md" : ""
             }`}
           >
-            <CardHeader className="p-3 pb-1">
+              <CardHeader className="p-3 pb-1">
               <CardTitle className="text-sm flex items-center text-zinc-900 gap-1">
                 {agent.is_triage && (
                   <span title="Triage (master)"><Crown className="h-4 w-4 text-amber-500" /></span>
@@ -43,6 +43,23 @@ export function AgentsList({ agents, currentAgent }: AgentsListProps) {
               <p className="text-xs font-light text-zinc-500">
                 {agent.description}
               </p>
+                {/* Tools and agent-backed indicators */}
+                {Array.isArray(agent.tools) && agent.tools.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {agent.tools.map((t, idx) => {
+                      const tn = typeof t === "string" ? t : t?.name;
+                      const ref = typeof t === "string" ? undefined : t?.agent_ref;
+                      return (
+                        <Badge key={`${tn}-${idx}`} variant="secondary" className="gap-1">
+                          <span>{tn}</span>
+                          {ref ? (
+                            <span className="ml-1 px-1 rounded bg-blue-100 text-blue-800 text-[10px]">agent: {ref}</span>
+                          ) : null}
+                        </Badge>
+                      );
+                    })}
+                  </div>
+                )}
               {agent.name === currentAgent && (
                 <Badge className="mt-2 bg-blue-600 hover:bg-blue-700 text-white">
                   Active

@@ -14,6 +14,7 @@ import {
   createTool,
   updateTool,
   deleteTool,
+  testTool,
   createGuardrail,
   updateGuardrail,
   deleteGuardrail,
@@ -62,6 +63,13 @@ export default function AdminPage() {
   const agentNames = useMemo(() => (state?.agents || []).map((a: any) => a.name), [state]);
   const toolNames = useMemo(() => (state?.tools || []).map((t: any) => t.name), [state]);
   const guardrailNames = useMemo(() => (state?.guardrails || []).map((g: any) => g.name), [state]);
+
+  // Tool detail lookup by display name
+  const toolByName = useMemo(() => {
+    const map: Record<string, any> = {};
+    for (const t of state?.tools || []) map[t.name] = t;
+    return map;
+  }, [state]);
 
   // Build quick lookups for attachments
   const toolsByAgent = useMemo(() => {
@@ -120,15 +128,17 @@ export default function AdminPage() {
 
   // Simple forms state
   const [newAgent, setNewAgent] = useState({ name: "", model: "gpt-4.1", handoff_description: "", instruction_type: "provider", instruction_value: "triage", is_triage: false });
-  const [newTool, setNewTool] = useState({ name: "", code_name: "", description: "" });
+  const [newTool, setNewTool] = useState({ name: "", code_name: "", description: "", agent_ref_name: "" });
   const [newGuardrail, setNewGuardrail] = useState({ name: "", code_name: "" });
   const [linkTool, setLinkTool] = useState({ agent_name: "", tool_name: "", sort_order: 0 });
   const [linkGuard, setLinkGuard] = useState({ agent_name: "", guardrail_name: "" });
   const [newHandoff, setNewHandoff] = useState({ source_agent: "", target_agent: "", on_handoff_callback: "" });
+  // Tool test state
+  const [toolTest, setToolTest] = useState<{ tool_code_name: string; argsText: string; result?: any; error?: string }>({ tool_code_name: "", argsText: "{}" });
 
   // Edit states
   const [editingAgent, setEditingAgent] = useState<null | { name: string; model: string; handoff_description: string; instruction_type: string; instruction_value: string }>(null);
-  const [editingTool, setEditingTool] = useState<null | { name: string; code_name: string; description: string }>(null);
+  const [editingTool, setEditingTool] = useState<null | { name: string; code_name: string; description: string; agent_ref_name?: string }>(null);
   const [editingGuardrail, setEditingGuardrail] = useState<null | { name: string; model: string; instruction_value: string }>(null);
   const [editingHandoff, setEditingHandoff] = useState<null | { source_agent: string; target_agent: string; on_handoff_callback: string }>(null);
 
@@ -144,6 +154,9 @@ export default function AdminPage() {
   const [attachGuardForAgent, setAttachGuardForAgent] = useState<string | null>(null);
   const [attachGuardForm, setAttachGuardForm] = useState<{ guardrail_name: string }>({ guardrail_name: "" });
   const [editToolOrder, setEditToolOrder] = useState<null | { agent_name: string; tool_name: string; sort_order: number }>(null);
+  // Quick create-and-attach Agent-as-Tool modal state
+  const [attachAgentAsToolFor, setAttachAgentAsToolFor] = useState<string | null>(null);
+  const [attachAgentAsToolForm, setAttachAgentAsToolForm] = useState<{ target_agent: string; tool_name: string; code_name: string; description: string; sort_order: number }>({ target_agent: "", tool_name: "", code_name: "", description: "", sort_order: 0 });
 
   // Context editor state
   const [showContextName, setShowContextName] = useState<string | null>(null); // "__global__" or triage agent name
@@ -320,15 +333,28 @@ export default function AdminPage() {
                   <div className="mt-3">
                     <div className="text-xs font-medium text-zinc-700 mb-1">Tools</div>
                     <div className="flex flex-wrap gap-1">
-                      {(toolsByAgent[a.name] || []).map((t) => (
-                        <Badge key={t.tool_name} variant="secondary" className="gap-1">
-                          <span>{t.tool_name}</span>
-                          <span className="opacity-70">#{t.sort_order}</span>
-                          <button className="ml-1 text-blue-700 hover:text-blue-900" onClick={() => setEditToolOrder({ agent_name: a.name, tool_name: t.tool_name, sort_order: t.sort_order })}>✎</button>
-                          <button className="ml-0.5 text-red-600 hover:text-red-700" onClick={async () => { setBusy(true); try { await detachTool(a.name, t.tool_name); await refresh(); } finally { setBusy(false); } }}>✕</button>
-                        </Badge>
-                      ))}
+                      {(toolsByAgent[a.name] || []).map((t) => {
+                        const td = toolByName[t.tool_name];
+                        const agentRef = td?.agent_ref_name as string | undefined;
+                        return (
+                          <Badge key={t.tool_name} variant="secondary" className="gap-1">
+                            <span>{t.tool_name}</span>
+                            {agentRef ? (
+                              <span className="ml-1 px-1 rounded bg-blue-100 text-blue-800 text-[10px]">agent: {agentRef}</span>
+                            ) : null}
+                            <span className="opacity-70">#{t.sort_order}</span>
+                            <button className="ml-1 text-blue-700 hover:text-blue-900" onClick={() => setEditToolOrder({ agent_name: a.name, tool_name: t.tool_name, sort_order: t.sort_order })}>✎</button>
+                            <button className="ml-0.5 text-red-600 hover:text-red-700" onClick={async () => { setBusy(true); try { await detachTool(a.name, t.tool_name); await refresh(); } finally { setBusy(false); } }}>✕</button>
+                          </Badge>
+                        );
+                      })}
                       <button className="text-xs px-2 py-0.5 border rounded bg-white" onClick={() => { setAttachToolForAgent(a.name); setAttachToolForm({ tool_name: "", sort_order: ((toolsByAgent[a.name]?.[toolsByAgent[a.name].length - 1]?.sort_order ?? -1) + 1) }); }}>Attach</button>
+                      <button className="text-xs px-2 py-0.5 border rounded bg-white" onClick={() => {
+                        // Open quick agent-as-tool creator
+                        const nextSort = (toolsByAgent[a.name]?.[toolsByAgent[a.name].length - 1]?.sort_order ?? -1) + 1;
+                        setAttachAgentAsToolFor(a.name);
+                        setAttachAgentAsToolForm({ target_agent: "", tool_name: "", code_name: "", description: "", sort_order: nextSort });
+                      }}>Attach Agent as Tool</button>
                     </div>
                   </div>
                   {/* Attached Guardrails */}
@@ -388,11 +414,55 @@ export default function AdminPage() {
             </div>
         <div className="grid grid-cols-3 gap-3">
           {state?.tools?.map((t) => (
-            <div key={t.name} className="border rounded p-3 bg-white">
+            <div key={t.name} className="border rounded p-3 bg-white space-y-2">
               <div className="font-medium">{t.name}</div>
               <div className="text-xs text-zinc-600">code: {t.code_name}</div>
+              <div className="text-xs text-zinc-500">{t.description}</div>
+              <div className="text-xs text-zinc-700">agent_ref_name</div>
+              <select className="w-full border rounded p-2 text-xs" value={t.agent_ref_name || ""} onChange={async (e) => {
+                const val = e.currentTarget.value || "";
+                setBusy(true);
+                try { await updateTool(t.name, { agent_ref_name: val || null }); await refresh(); } finally { setBusy(false); }
+              }}>
+                <option value="">(none)</option>
+                {agentNames.map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+              {/* Test directly from card */}
+              <div className="space-y-1">
+                <div className="text-xs text-zinc-700">Test arguments (JSON)</div>
+                <textarea className="w-full border rounded p-2 text-xs min-h-[80px]" defaultValue={(t.test_arguments ? (typeof t.test_arguments === 'string' ? t.test_arguments : JSON.stringify(t.test_arguments, null, 2)) : '{}')} onBlur={async (e) => {
+                  // Save back to server on blur
+                  const val = e.currentTarget.value || '{}';
+                  try {
+                    const parsed = JSON.parse(val);
+                    await updateTool(t.name, { test_arguments: parsed });
+                    await refresh();
+                  } catch {}
+                }} />
+                <div className="flex gap-2">
+                  <button className="text-xs px-2 py-1 bg-zinc-800 text-white rounded" onClick={async () => {
+                    setBusy(true);
+                    try {
+                      let args: any = {};
+                      const ta = t.test_arguments;
+                      if (ta) {
+                        if (typeof ta === 'string') { try { args = JSON.parse(ta); } catch { args = {}; } }
+                        else args = ta;
+                      }
+                      const res = await testTool({ tool_code_name: t.code_name, arguments: args });
+                      alert(res.ok ? (res.output || 'OK') : (res.error || 'Error'));
+                    } finally { setBusy(false); }
+                  }}>Run Test</button>
+                  <button className="text-xs px-2 py-1 bg-zinc-100 border rounded" onClick={async () => {
+                    setBusy(true);
+                    try { await updateTool(t.name, { test_arguments: {} }); await refresh(); } finally { setBusy(false); }
+                  }}>Clear</button>
+                </div>
+              </div>
               <div className="mt-2 flex gap-2">
-                    <button className="text-xs px-2 py-1 bg-zinc-800 text-white rounded" onClick={() => setEditingTool({ name: t.name, code_name: t.code_name, description: t.description || "" })}>Edit</button>
+                <button className="text-xs px-2 py-1 bg-zinc-800 text-white rounded" onClick={() => setEditingTool({ name: t.name, code_name: t.code_name, description: t.description || '' })}>Edit</button>
                 <button className="text-xs px-2 py-1 bg-red-600 text-white rounded" onClick={async () => { setBusy(true); try { await deleteTool(t.name); await refresh(); } finally { setBusy(false); } }}>Delete</button>
               </div>
             </div>
@@ -413,7 +483,11 @@ export default function AdminPage() {
               </select>
               <select className="border p-2 rounded" value={linkTool.tool_name} onChange={e => setLinkTool({ ...linkTool, tool_name: e.target.value })}>
                 <option value="">tool</option>
-                {toolNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                {toolNames.map((n) => {
+                  const td = toolByName[n];
+                  const label = td?.agent_ref_name ? `${n} (agent: ${td.agent_ref_name})` : n;
+                  return <option key={n} value={n}>{label}</option>;
+                })}
               </select>
               <input type="number" className="border p-2 rounded" value={linkTool.sort_order} onChange={e => setLinkTool({ ...linkTool, sort_order: Number(e.target.value) })} />
             </div>
@@ -421,6 +495,47 @@ export default function AdminPage() {
               <button className="px-3 py-1 rounded bg-black text-white disabled:bg-gray-300" disabled={!linkTool.agent_name || !linkTool.tool_name} onClick={async () => { setBusy(true); try { await attachTool(linkTool); await refresh(); } finally { setBusy(false); } }}>Attach</button>
               <button className="px-3 py-1 rounded bg-red-600 text-white disabled:bg-gray-300" disabled={!linkTool.agent_name || !linkTool.tool_name} onClick={async () => { setBusy(true); try { await detachTool(linkTool.agent_name, linkTool.tool_name); await refresh(); } finally { setBusy(false); } }}>Detach</button>
             </div>
+            </div>
+          </div>
+
+          {/* Test Tool */}
+          <div className="space-y-3">
+            <h2 className="text-lg font-medium">Test Tool</h2>
+            <div className="border rounded p-3 bg-white space-y-2">
+              <div className="grid grid-cols-3 gap-2">
+                <select className="border p-2 rounded" value={toolTest.tool_code_name} onChange={e => setToolTest({ ...toolTest, tool_code_name: e.target.value })}>
+                  <option value="">select tool (code name)</option>
+                  {(state?.tools || []).map((t) => (
+                    <option key={t.code_name} value={t.code_name}>{t.code_name}</option>
+                  ))}
+                </select>
+                <div className="col-span-2">
+                  <input className="w-full border p-2 rounded" placeholder='arguments as JSON, e.g. {"query":"openai"}' value={toolTest.argsText} onChange={e => setToolTest({ ...toolTest, argsText: e.target.value })} />
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button className="px-3 py-1 rounded bg-black text-white disabled:bg-gray-300" disabled={!toolTest.tool_code_name} onClick={async () => {
+                  setBusy(true);
+                  try {
+                    let args: any = {};
+                    try { args = toolTest.argsText ? JSON.parse(toolTest.argsText) : {}; } catch (e:any) { setToolTest({ ...toolTest, error: "Invalid JSON for arguments" }); return; }
+                    const res = await testTool({ tool_code_name: toolTest.tool_code_name, arguments: args });
+                    setToolTest({ ...toolTest, result: res, error: undefined });
+                  } catch (e:any) {
+                    setToolTest({ ...toolTest, error: e?.message || String(e) });
+                  } finally { setBusy(false); }
+                }}>Run</button>
+                <button className="px-3 py-1 rounded border" onClick={() => setToolTest({ tool_code_name: "", argsText: "{}" })}>Clear</button>
+              </div>
+              {(toolTest.result || toolTest.error) && (
+                <div className="mt-2 text-sm">
+                  {toolTest.error ? (
+                    <div className="text-red-600">{toolTest.error}</div>
+                  ) : (
+                    <pre className="whitespace-pre-wrap bg-gray-50 p-2 rounded border text-xs">{JSON.stringify(toolTest.result, null, 2)}</pre>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </section>
@@ -627,14 +742,18 @@ export default function AdminPage() {
             <DialogHeader>
               <DialogTitle>Create Tool</DialogTitle>
             </DialogHeader>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-2">
               <input placeholder="name" className="border p-2 rounded" value={newTool.name} onChange={e => setNewTool({ ...newTool, name: e.target.value })} />
               <input placeholder="code_name" className="border p-2 rounded" value={newTool.code_name} onChange={e => setNewTool({ ...newTool, code_name: e.target.value })} />
               <input placeholder="description" className="border p-2 rounded" value={newTool.description} onChange={e => setNewTool({ ...newTool, description: e.target.value })} />
+              <select className="border p-2 rounded" value={newTool.agent_ref_name} onChange={e => setNewTool({ ...newTool, agent_ref_name: e.target.value })}>
+                <option value="">(no agent)</option>
+                {agentNames.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
             </div>
             <DialogFooter>
               <button className="px-3 py-1 rounded bg-gray-200" onClick={() => setShowCreateTool(false)}>Cancel</button>
-              <button className="px-3 py-1 rounded bg-black text-white disabled:bg-gray-300" disabled={!newTool.name || !newTool.code_name} onClick={async () => { setBusy(true); try { await createTool(newTool); await refresh(); setShowCreateTool(false); } finally { setBusy(false); } }}>Create</button>
+              <button className="px-3 py-1 rounded bg-black text-white disabled:bg-gray-300" disabled={!newTool.name || !newTool.code_name} onClick={async () => { setBusy(true); try { await createTool({ ...newTool, agent_ref_name: newTool.agent_ref_name || undefined }); await refresh(); setShowCreateTool(false); } finally { setBusy(false); } }}>Create</button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -646,14 +765,18 @@ export default function AdminPage() {
             <DialogHeader>
               <DialogTitle>Edit Tool — {editingTool.name}</DialogTitle>
             </DialogHeader>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-2">
               <input disabled className="border p-2 rounded opacity-60" value={editingTool.name} />
               <input placeholder="code_name" className="border p-2 rounded" value={editingTool.code_name} onChange={e => setEditingTool({ ...editingTool, code_name: e.target.value })} />
               <input placeholder="description" className="border p-2 rounded" value={editingTool.description} onChange={e => setEditingTool({ ...editingTool, description: e.target.value })} />
+              <select className="border p-2 rounded" value={editingTool.agent_ref_name || ""} onChange={e => setEditingTool({ ...editingTool, agent_ref_name: e.target.value })}>
+                <option value="">(no agent)</option>
+                {agentNames.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
             </div>
             <DialogFooter>
               <button className="px-3 py-1 rounded bg-gray-200" onClick={() => setEditingTool(null)}>Cancel</button>
-              <button className="px-3 py-1 rounded bg-black text-white" onClick={async () => { if (!editingTool) return; setBusy(true); try { await updateTool(editingTool.name, { code_name: editingTool.code_name, description: editingTool.description }); await refresh(); setEditingTool(null); } finally { setBusy(false); } }}>Update</button>
+              <button className="px-3 py-1 rounded bg-black text-white" onClick={async () => { if (!editingTool) return; setBusy(true); try { await updateTool(editingTool.name, { code_name: editingTool.code_name, description: editingTool.description, agent_ref_name: editingTool.agent_ref_name || null }); await refresh(); setEditingTool(null); } finally { setBusy(false); } }}>Update</button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -734,6 +857,55 @@ export default function AdminPage() {
             <DialogFooter>
               <button className="px-3 py-1 rounded bg-gray-200" onClick={() => setEditToolOrder(null)}>Cancel</button>
               <button className="px-3 py-1 rounded bg-black text-white" onClick={async () => { if (!editToolOrder) return; setBusy(true); try { await attachTool({ agent_name: editToolOrder.agent_name, tool_name: editToolOrder.tool_name, sort_order: editToolOrder.sort_order }); await refresh(); setEditToolOrder(null); } finally { setBusy(false); } }}>Save</button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Quick Create-and-Attach Agent-as-Tool Modal */}
+      {attachAgentAsToolFor && (
+        <Dialog open onOpenChange={(o) => !o && setAttachAgentAsToolFor(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Attach Agent as Tool — {attachAgentAsToolFor}</DialogTitle>
+            </DialogHeader>
+            <div className="grid grid-cols-2 gap-2">
+              <select className="border p-2 rounded" value={attachAgentAsToolForm.target_agent} onChange={e => {
+                const v = e.target.value;
+                // suggest defaults when target chosen
+                const makeSlug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+                const suggestedName = `Use ${v}`;
+                const suggestedCode = `${makeSlug(v)}_agent`;
+                setAttachAgentAsToolForm(f => ({ ...f, target_agent: v, tool_name: f.tool_name || suggestedName, code_name: f.code_name || suggestedCode, description: f.description || `Calls the ${v} agent as a tool` }));
+              }}>
+                <option value="">select agent</option>
+                {agentNames
+                  .filter((n) => n !== attachAgentAsToolFor)
+                  .map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <input className="border p-2 rounded" placeholder="tool name (display)" value={attachAgentAsToolForm.tool_name} onChange={e => setAttachAgentAsToolForm({ ...attachAgentAsToolForm, tool_name: e.target.value })} />
+              <input className="border p-2 rounded" placeholder="code_name (unique)" value={attachAgentAsToolForm.code_name} onChange={e => setAttachAgentAsToolForm({ ...attachAgentAsToolForm, code_name: e.target.value })} />
+              <input className="border p-2 rounded" placeholder="description (optional)" value={attachAgentAsToolForm.description} onChange={e => setAttachAgentAsToolForm({ ...attachAgentAsToolForm, description: e.target.value })} />
+              <input type="number" className="border p-2 rounded" placeholder="sort" value={attachAgentAsToolForm.sort_order} onChange={e => setAttachAgentAsToolForm({ ...attachAgentAsToolForm, sort_order: Number(e.target.value) })} />
+            </div>
+            <DialogFooter>
+              <button className="px-3 py-1 rounded bg-gray-200" onClick={() => setAttachAgentAsToolFor(null)}>Cancel</button>
+              <button className="px-3 py-1 rounded bg-black text-white disabled:bg-gray-300" disabled={!attachAgentAsToolForm.target_agent || !attachAgentAsToolForm.tool_name || !attachAgentAsToolForm.code_name} onClick={async () => {
+                if (!attachAgentAsToolFor) return;
+                setBusy(true);
+                try {
+                  const payload = {
+                    name: attachAgentAsToolForm.tool_name,
+                    code_name: attachAgentAsToolForm.code_name,
+                    description: attachAgentAsToolForm.description || undefined,
+                    agent_ref_name: attachAgentAsToolForm.target_agent,
+                  } as any;
+                  try { await createTool(payload); } catch { /* ignore if exists */ }
+                  await attachTool({ agent_name: attachAgentAsToolFor, tool_name: attachAgentAsToolForm.tool_name, sort_order: attachAgentAsToolForm.sort_order });
+                  await refresh();
+                  setAttachAgentAsToolFor(null);
+                } finally { setBusy(false); }
+              }}>Create & Attach</button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

@@ -6,7 +6,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Airlines Agent Orchestration",
+  title: "AgentC Orchestration",
   description: "An interface for airline agent orchestration",
   icons: {
     icon: "/openai_logo.svg",

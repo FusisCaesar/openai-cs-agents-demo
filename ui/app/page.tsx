@@ -26,16 +26,24 @@ export default function Home() {
       try {
         const st = await getAdminState();
         setTriageOptions(st.triage_agents || []);
-        if (!triageName) {
-          setTriageName((st.triage_agents && st.triage_agents[0]) || "Triage Agent");
-        }
+        // Load persisted triage if available and valid
+        const saved = typeof window !== "undefined" ? window.localStorage.getItem("triageName") : null;
+        const candidates: string[] = st.triage_agents || [];
+        const initial = saved && candidates.includes(saved) ? saved : (candidates[0] || "Triage Agent");
+        setTriageName((prev) => prev ?? initial);
       } catch {}
     })();
   }, []);
 
   useEffect(() => {
+    // Persist latest chosen triage
+    if (triageName) {
+      try { window.localStorage.setItem("triageName", triageName); } catch {}
+    }
+    if (!triageName) return; // wait until triage is known
     (async () => {
-      const data = await callChatAPI("", conversationId ?? "", triageName ?? undefined);
+      const data = await callChatAPI("", conversationId ?? "", triageName);
+      if (!data) return;
       setConversationId(data.conversation_id);
       setCurrentAgent(data.current_agent);
       setContext(data.context);
@@ -73,6 +81,10 @@ export default function Home() {
     setIsLoading(true);
 
     const data = await callChatAPI(content, conversationId ?? "", triageName ?? undefined);
+    if (!data) {
+      setIsLoading(false);
+      return;
+    }
 
     if (!conversationId) setConversationId(data.conversation_id);
     setCurrentAgent(data.current_agent);
@@ -116,7 +128,12 @@ export default function Home() {
       if (visited.has(curr)) continue;
       visited.add(curr);
       const a = nameToAgent[curr];
-      const next = (a?.handoffs || []) as string[];
+      // Traverse both handoffs and agents referenced via tools (manager pattern)
+      const handoffTargets = (a?.handoffs || []) as string[];
+      const toolTargets: string[] = ((a?.tools || []) as Array<string | { name: string; agent_ref?: string }>)
+        .map((t) => (typeof t === "string" ? undefined : t.agent_ref))
+        .filter((x): x is string => Boolean(x));
+      const next = [...handoffTargets, ...toolTargets];
       for (const n of next) if (!visited.has(n)) queue.push(n);
     }
     const reachable = agents.filter((a) => visited.has(a.name));

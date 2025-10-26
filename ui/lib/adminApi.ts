@@ -81,6 +81,16 @@ export async function deleteTool(name: string) {
   return res.json();
 }
 
+export async function testTool(payload: { tool_code_name: string; arguments?: Record<string, any> }) {
+  const res = await fetch("/admin/tools/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`Failed to test tool: ${res.status}`);
+  return res.json();
+}
+
 export async function createGuardrail(payload: any) {
   const res = await fetch("/admin/guardrails", {
     method: "POST",

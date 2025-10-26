@@ -16,6 +16,7 @@
     "@radix-ui/react-slot": "^1.1.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "dagre": "^0.8.5",
     "lucide-react": "^0.484.0",
     "motion": "^12.4.10",
     "next": "^15.2.4",
@@ -24,6 +25,7 @@
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.0.0",
+    "reactflow": "^11.11.4",
     "tailwind-merge": "^3.0.2",
     "tailwindcss-animate": "^1.0.7",
     "wavtools": "^0.1.5"

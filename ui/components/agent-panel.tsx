@@ -6,6 +6,7 @@ import { AgentsList } from "./agents-list";
 import { Guardrails } from "./guardrails";
 import { ConversationContext } from "./conversation-context";
 import { RunnerOutput } from "./runner-output";
+import { HandoffsFlow } from "./handoffs-flow";
 
 interface AgentPanelProps {
   agents: Agent[];
@@ -62,6 +63,7 @@ export function AgentPanel({
 
       <div className="flex-1 overflow-y-auto p-6 bg-gray-50/50">
         <AgentsList agents={agents} currentAgent={currentAgent} />
+        <HandoffsFlow agents={agents} />
         <Guardrails
           guardrails={guardrails}
           inputGuardrails={activeAgent?.input_guardrails ?? []}

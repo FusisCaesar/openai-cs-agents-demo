@@ -38,7 +38,8 @@ async def init_schema() -> None:
             create table if not exists tools (
                 name text primary key,
                 code_name text not null,
-                description text
+                description text,
+                test_arguments text
             );
 
             create table if not exists agent_tools (
@@ -77,6 +78,7 @@ async def init_schema() -> None:
             """
             alter table guardrails add column if not exists model text;
             alter table guardrails add column if not exists instruction_value text;
+            alter table tools add column if not exists agent_ref_name text;
             """
         )
 

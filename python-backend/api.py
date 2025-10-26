@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import time
+import asyncio
 import logging
 
 from domain import (
@@ -142,11 +143,18 @@ def _build_agents_list() -> List[Dict[str, Any]]:
     """Build a list of all available agents and their metadata."""
     assert _registry is not None, "Registry not initialized"
     def make_agent_dict(agent):
+        # Map tool names to agent refs if available
+        tool_names = [getattr(t, "name", getattr(t, "__name__", "")) for t in getattr(agent, "tools", [])]
+        tool_agent_refs = getattr(agent, "_tool_agent_refs", {}) or {}
+        tools: List[Dict[str, Any]] = []
+        for tn in tool_names:
+            ref = tool_agent_refs.get(tn)
+            tools.append({"name": tn, "agent_ref": ref} if ref else {"name": tn})
         return {
             "name": agent.name,
             "description": getattr(agent, "handoff_description", ""),
             "handoffs": [getattr(h, "agent_name", getattr(h, "name", "")) for h in getattr(agent, "handoffs", [])],
-            "tools": [getattr(t, "name", getattr(t, "__name__", "")) for t in getattr(agent, "tools", [])],
+            "tools": tools,
             "input_guardrails": [_get_guardrail_name(g) for g in getattr(agent, "input_guardrails", [])],
         }
     return [make_agent_dict(a) for a in _registry.list_all()]
@@ -232,7 +240,11 @@ async def chat_endpoint(req: ChatRequest):
             pass
         logger.debug("Input items=%s", state["input_items"])
 
-        result = await Runner.run(current_agent, state["input_items"], context=state["context"])
+        # Enforce an overall timeout for the agent run to prevent 500s on long calls
+        result = await asyncio.wait_for(
+            Runner.run(current_agent, state["input_items"], context=state["context"]),
+            timeout=30.0,
+        )
     except InputGuardrailTripwireTriggered as e:
         failed = e.guardrail_result.guardrail
         gr_output = e.guardrail_result.output.output_info
@@ -266,10 +278,36 @@ async def chat_endpoint(req: ChatRequest):
             agents=_build_agents_list(),
             guardrails=guardrail_checks,
         )
+    except asyncio.TimeoutError:
+        apology = "Sorry, this request is taking longer than expected. Please try again."
+        state["input_items"].append({"role": "assistant", "content": apology})
+        return ChatResponse(
+            conversation_id=conversation_id,
+            current_agent=current_agent.name,
+            messages=[MessageResponse(content=apology, agent=current_agent.name)],
+            events=[],
+            context=state["context"].model_dump(),
+            agents=_build_agents_list(),
+            guardrails=[],
+        )
+    except Exception as e:
+        logger.exception("Unhandled error in chat endpoint")
+        error_msg = "Sorry, something went wrong while generating a response."
+        state["input_items"].append({"role": "assistant", "content": error_msg})
+        return ChatResponse(
+            conversation_id=conversation_id,
+            current_agent=current_agent.name,
+            messages=[MessageResponse(content=error_msg, agent=current_agent.name)],
+            events=[],
+            context=state["context"].model_dump(),
+            agents=_build_agents_list(),
+            guardrails=[],
+        )
 
     messages: List[MessageResponse] = []
     events: List[AgentEvent] = []
 
+    last_tool_name: str | None = None
     for item in result.new_items:
         if isinstance(item, MessageOutputItem):
             text = ItemHelpers.text_message_output(item)
@@ -326,6 +364,7 @@ async def chat_endpoint(req: ChatRequest):
                     tool_args = json.loads(raw_args)
                 except Exception:
                     pass
+            last_tool_name = tool_name or None
             events.append(
                 AgentEvent(
                     id=uuid4().hex,
@@ -355,6 +394,36 @@ async def chat_endpoint(req: ChatRequest):
                 )
             )
             logger.info("Tool output ← agent=%s output=%s", item.agent.name, item.output)
+            # Surface agent-as-tool outputs (manager pattern) or known web-search tools as user-visible messages
+            agent_tool_refs = getattr(current_agent, "_tool_agent_refs", {}) or {}
+            is_agent_tool = last_tool_name in agent_tool_refs if last_tool_name else False
+            is_known_web_tool = last_tool_name in {"perplexity_web_search", "modern_web_search", "web_search"}
+            if isinstance(item.output, str) and (is_agent_tool or is_known_web_tool):
+                # Prefer agent-as-tool labeling if this tool name is a wrapper around another agent
+                prefix: str | None = None
+                if is_agent_tool:
+                    try:
+                        ref_name = agent_tool_refs.get(last_tool_name or "")
+                        if ref_name:
+                            prefix = f"[Agent Tool: {ref_name}] "
+                        else:
+                            prefix = "[Agent Tool] "
+                    except Exception:
+                        prefix = "[Agent Tool] "
+                elif last_tool_name == "perplexity_web_search":
+                    prefix = "[Perplexity] "
+                elif last_tool_name == "modern_web_search":
+                    prefix = "[OpenAI Web Search] "
+                elif last_tool_name == "web_search":
+                    prefix = "[Web Search] "
+                content_with_prefix = f"{prefix or ''}{item.output}"
+                messages.append(
+                    MessageResponse(
+                        content=content_with_prefix,
+                        agent=item.agent.name,
+                    )
+                )
+                last_tool_name = None
 
     new_context = state["context"].dict()
     changes = {k: new_context[k] for k in new_context if old_context.get(k) != new_context[k]}

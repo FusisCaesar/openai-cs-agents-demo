@@ -32,10 +32,10 @@ async def _load_agents() -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-async def _load_tools_by_agent(agent_id: int) -> list[str]:
+async def _load_tools_by_agent(agent_id: int) -> list[dict[str, Any]]:
     rows = await fetch(
         """
-        select t.code_name as code_name
+        select t.code_name as code_name, t.description as description, t.agent_ref_name as agent_ref_name
         from agent_tools at
         join tools t on t.name = at.tool_name
         where at.agent_id = $1
@@ -43,7 +43,7 @@ async def _load_tools_by_agent(agent_id: int) -> list[str]:
         """,
         agent_id,
     )
-    return [r["code_name"] for r in rows]
+    return [dict(r) for r in rows]
 
 
 async def _load_guardrails_by_agent(agent_id: int) -> list[dict[str, Any]]:
@@ -79,7 +79,7 @@ async def build_dynamic_registry() -> DynamicRegistry:
     reg = DynamicRegistry()
 
     agent_rows = await _load_agents()
-    tools_by_agent: dict[int, list[str]] = {}
+    tools_by_agent: dict[int, list[dict[str, Any]]] = {}
     guards_by_agent: dict[int, list[dict[str, Any]]] = {}
 
     for row in agent_rows:
@@ -87,7 +87,7 @@ async def build_dynamic_registry() -> DynamicRegistry:
         tools_by_agent[aid] = await _load_tools_by_agent(aid)
         guards_by_agent[aid] = await _load_guardrails_by_agent(aid)
 
-    # First pass: create agents without handoffs
+    # First pass: create agents without tools/handoffs
     temp_by_id: dict[int, Agent] = {}
     def _make_instruction_from_template(template: str):
         def _provider(run_context, agent):
@@ -127,11 +127,7 @@ async def build_dynamic_registry() -> DynamicRegistry:
         else:  # provider string fallback to raw text if misconfigured
             agent_instructions = instruction_value
 
-        tool_callables: list[Callable[..., Awaitable[str]]] = []
-        for tool_code_name in tools_by_agent[row["id"]]:
-            impl = TOOL_REGISTRY.get(tool_code_name)
-            if impl is not None:
-                tool_callables.append(impl)
+        tool_callables: list[Callable[..., Awaitable[str]]] = []  # deferred, assigned in second pass
 
         guardrail_callables = []
         for gr_row in guards_by_agent[row["id"]]:
@@ -178,6 +174,51 @@ async def build_dynamic_registry() -> DynamicRegistry:
         )
         temp_by_id[row["id"]] = agent
         reg.agents_by_name[name] = agent
+
+    # Second pass: wire tools (including agents-as-tools)
+    for row in agent_rows:
+        aid = row["id"]
+        agent = temp_by_id[aid]
+        built: list[Callable[..., Awaitable[str]]] = []
+        # map tool_code_name -> agent_ref_name (if any)
+        tool_agent_refs: dict[str, str] = {}
+        for tr in tools_by_agent.get(aid, []):
+            tool_code_name = tr.get("code_name")
+            desc = tr.get("description") or tool_code_name
+            agent_ref_name = tr.get("agent_ref_name")
+            if agent_ref_name:
+                tgt = reg.agents_by_name.get(agent_ref_name)
+                # Prevent self-referential agent-as-tool wiring which would cause loops
+                if tgt is agent:
+                    # Skip attaching an agent as a tool to itself
+                    continue
+                if tgt is not None:
+                    try:
+                        built.append(tgt.as_tool(tool_name=tool_code_name, tool_description=desc))
+                        tool_agent_refs[tool_code_name] = agent_ref_name
+                        continue
+                    except Exception:
+                        pass
+                # Fallback: create a thin wrapper if as_tool is unavailable
+                async def _fallback_tool(context, _name=agent_ref_name):
+                    tgt2 = reg.agents_by_name.get(_name)
+                    if not tgt2:
+                        return f"Agent '{_name}' not found"
+                    res = await Runner.run(tgt2, context.input_items if hasattr(context, 'input_items') else [], context=context.context)
+                    from agents import ItemHelpers
+                    return ItemHelpers.final_text(res)
+                built.append(_fallback_tool)
+                tool_agent_refs[tool_code_name] = agent_ref_name
+            else:
+                impl = TOOL_REGISTRY.get(tool_code_name)
+                if impl is not None:
+                    built.append(impl)
+        agent.tools = built
+        # attach mapping for API consumption
+        try:
+            setattr(agent, "_tool_agent_refs", tool_agent_refs)
+        except Exception:
+            pass
 
     # Second pass: wire handoffs
     for h in await _load_handoffs():

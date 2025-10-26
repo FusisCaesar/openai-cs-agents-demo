@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from db import fetch, fetchrow, execute
-from domain import RECOMMENDED_PROMPT_PREFIX
+from domain import RECOMMENDED_PROMPT_PREFIX, TOOL_REGISTRY, TOOL_TEST_INVOKERS
 from loader import build_dynamic_registry, DynamicRegistry
 
 
@@ -31,11 +31,15 @@ class ToolCreate(BaseModel):
     name: str
     code_name: str
     description: Optional[str] = None
+    test_arguments: Optional[dict[str, Any]] = None
+    agent_ref_name: Optional[str] = None
 
 
 class ToolUpdate(BaseModel):
     code_name: Optional[str] = None
     description: Optional[str] = None
+    test_arguments: Optional[dict[str, Any]] = None
+    agent_ref_name: Optional[str] = None
 
 
 class GuardrailCreate(BaseModel):
@@ -65,6 +69,16 @@ class HandoffUpdate(BaseModel):
     source_agent: str
     target_agent: str
     on_handoff_callback: Optional[str] = None
+class ToolTestRequest(BaseModel):
+    tool_code_name: str
+    # Free-form JSON payload to pass to the tool. Keys must match tool signature.
+    arguments: dict[str, Any] = {}
+
+class ToolTestResponse(BaseModel):
+    ok: bool
+    output: str | None = None
+    error: str | None = None
+
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -163,9 +177,11 @@ async def delete_agent(name: str) -> dict[str, Any]:
 
 @router.post("/tools")
 async def create_tool(body: ToolCreate) -> dict[str, Any]:
+    import json
+    test_args = json.dumps(body.test_arguments) if body.test_arguments is not None else None
     await execute(
-        "insert into tools(name, code_name, description) values($1,$2,$3)",
-        body.name, body.code_name, body.description,
+        "insert into tools(name, code_name, description, test_arguments, agent_ref_name) values($1,$2,$3,$4,$5)",
+        body.name, body.code_name, body.description, test_args, (body.agent_ref_name or None),
     )
     return {"ok": True}
 
@@ -180,6 +196,14 @@ async def update_tool(name: str, body: ToolUpdate) -> dict[str, Any]:
     if body.description is not None:
         fields.append("description=$%d" % (len(args) + 1))
         args.append(body.description)
+    if body.test_arguments is not None:
+        import json
+        fields.append("test_arguments=$%d" % (len(args) + 1))
+        args.append(json.dumps(body.test_arguments))
+    if body.agent_ref_name is not None:
+        fields.append("agent_ref_name=$%d" % (len(args) + 1))
+        # Treat empty string as NULL to allow clearing via UI
+        args.append(body.agent_ref_name or None)
     if not fields:
         return {"ok": True}
     args.append(name)
@@ -376,5 +400,81 @@ async def migrate_instructions_provider_to_text() -> dict[str, Any]:
     await execute("update agents set instruction_type='text', instruction_value=$1 where instruction_type='provider' and instruction_value='cancellation'", cancellation_text)
 
     return {"ok": True}
+
+
+@router.post("/tools/test", response_model=ToolTestResponse)
+async def test_tool(body: ToolTestRequest) -> ToolTestResponse:
+    """Invoke a tool directly by code name with provided arguments."""
+    import inspect
+
+    # Prefer explicit test invoker if available to bypass wrappers
+    impl = TOOL_TEST_INVOKERS.get(body.tool_code_name) or TOOL_REGISTRY.get(body.tool_code_name)
+    if not impl:
+        return ToolTestResponse(ok=False, output=None, error=f"Tool '{body.tool_code_name}' not found")
+
+    def _resolve_callable(obj):
+        # Directly callable
+        if callable(obj):
+            return obj
+        # Common attributes on wrappers
+        for attr in ("__wrapped__", "wrapped", "function", "func", "handler", "fn", "callable", "callback"):
+            f = getattr(obj, attr, None)
+            if callable(f):
+                return f
+        # Common method names
+        for method in ("__call__", "invoke", "run", "execute"):
+            m = getattr(obj, method, None)
+            if callable(m):
+                return m
+        # Heuristic scan for any compatible callable member
+        try:
+            import inspect as _inspect
+            candidates = []
+            for name in dir(obj):
+                if name.startswith("_"):
+                    continue
+                val = getattr(obj, name, None)
+                if callable(val):
+                    candidates.append(val)
+            kw = set((body.arguments or {}).keys())
+            for c in candidates:
+                try:
+                    sig = _inspect.signature(c)
+                    params = sig.parameters
+                    if any(p.kind == _inspect.Parameter.VAR_KEYWORD for p in params.values()) or kw.issubset(set(params.keys()) | {"context"}):
+                        return c
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
+
+    target = _resolve_callable(impl)
+    if target is None:
+        return ToolTestResponse(ok=False, output=None, error="Tool implementation is not directly invokable")
+
+    kwargs = dict(body.arguments or {})
+
+    # If tool expects a 'context' arg and none provided, inject a minimal wrapper
+    try:
+        sig = inspect.signature(target)
+        if "context" in sig.parameters and "context" not in kwargs:
+            class _CtxWrap:  # minimal RunContextWrapper-like shape
+                def __init__(self):
+                    from domain import AgentContext
+                    self.context = AgentContext()
+            kwargs["context"] = _CtxWrap()
+    except Exception:
+        pass
+
+    try:
+        result = target(**kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        return ToolTestResponse(ok=True, output=str(result))
+    except TypeError as te:
+        return ToolTestResponse(ok=False, output=None, error=f"Bad arguments: {te}")
+    except Exception as e:
+        return ToolTestResponse(ok=False, output=None, error=str(e))
 
 

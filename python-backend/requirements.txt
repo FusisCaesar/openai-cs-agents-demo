@@ -4,3 +4,6 @@ fastapi
 uvicorn
 python-dotenv
 asyncpg
+httpx
+openai
+aiohttp

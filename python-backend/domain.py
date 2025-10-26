@@ -17,6 +17,9 @@ from agents import (
     input_guardrail,
 )
 from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
+from services.web_search import web_search_service
+from services.openai_web_search import openai_web_search_service
+from services.perplexity_web_search import perplexity_web_search_service
 
 
 # =========================
@@ -114,6 +117,30 @@ async def cancel_flight(
     return f"Flight {fn} successfully cancelled"
 
 
+# Generic Web Search tool
+@function_tool(
+    name_override="web_search",
+    description_override="Search the internet and return top results."
+)
+async def web_search(query: str, max_results: int = 5) -> str:
+    return await web_search_service(query, max_results=max_results)
+
+# OpenAI modern Web Search tool
+@function_tool(
+    name_override="modern_web_search",
+    description_override="Use OpenAI web search to synthesize an answer with citations."
+)
+async def modern_web_search(query: str, max_results: int = 5) -> str:
+    return await openai_web_search_service(query, max_results=max_results)
+
+# Perplexity Web Search tool
+@function_tool(
+    name_override="perplexity_web_search",
+    description_override="Search the web with Perplexity.AI and return a concise answer with sources."
+)
+async def perplexity_web_search(input: str, max_results: int = 5) -> str:
+    return await perplexity_web_search_service(input, max_results=max_results)
+
 # Expose a registry for dynamic wiring
 TOOL_REGISTRY: dict[str, Callable[..., Awaitable[str]]]
 TOOL_REGISTRY = {
@@ -123,6 +150,83 @@ TOOL_REGISTRY = {
     "baggage_tool": baggage_tool,
     "display_seat_map": display_seat_map,
     "cancel_flight": cancel_flight,
+    "web_search": web_search,
+    "modern_web_search": modern_web_search,
+    "perplexity_web_search": perplexity_web_search,
+}
+
+
+# =========================
+# TEST INVOKERS (for admin tool testing)
+# =========================
+
+
+async def _test_faq_lookup_tool(question: str) -> str:
+    q = (question or "").lower()
+    if "bag" in q or "baggage" in q:
+        return (
+            "You are allowed to bring one bag on the plane. "
+            "It must be under 50 pounds and 22 inches x 14 inches x 9 inches."
+        )
+    elif "seats" in q or "plane" in q:
+        return (
+            "There are 120 seats on the plane. "
+            "There are 22 business class seats and 98 economy seats. "
+            "Exit rows are rows 4 and 16. "
+            "Rows 5-8 are Economy Plus, with extra legroom."
+        )
+    elif "wifi" in q:
+        return "We have free wifi on the plane, join Airline-Wifi"
+    return "I'm sorry, I don't know the answer to that question."
+
+
+async def _test_baggage_tool(query: str) -> str:
+    q = (query or "").lower()
+    if "fee" in q:
+        return "Overweight bag fee is $75."
+    if "allowance" in q:
+        return "One carry-on and one checked bag (up to 50 lbs) are included."
+    return "Please provide details about your baggage inquiry."
+
+
+async def _test_flight_status_tool(flight_number: str) -> str:
+    return f"Flight {flight_number} is on time and scheduled to depart at gate A10."
+
+
+async def _test_display_seat_map() -> str:
+    return "DISPLAY_SEAT_MAP"
+
+
+async def _test_cancel_flight(flight_number: str) -> str:
+    return f"Flight {flight_number} successfully cancelled"
+
+
+async def _test_update_seat(confirmation_number: str, new_seat: str) -> str:
+    return f"Updated seat to {new_seat} for confirmation number {confirmation_number}"
+
+
+async def _test_web_search(query: str, max_results: int = 5) -> str:
+    return await web_search_service(query, max_results=max_results)
+
+
+async def _test_modern_web_search(query: str, max_results: int = 5) -> str:
+    return await openai_web_search_service(query, max_results=max_results)
+
+
+async def _test_perplexity_web_search(query: str, max_results: int = 5) -> str:
+    return await perplexity_web_search_service(query, max_results=max_results)
+
+
+TOOL_TEST_INVOKERS: dict[str, Callable[..., Awaitable[str]]] = {
+    "faq_lookup_tool": _test_faq_lookup_tool,
+    "baggage_tool": _test_baggage_tool,
+    "flight_status_tool": _test_flight_status_tool,
+    "display_seat_map": _test_display_seat_map,
+    "cancel_flight": _test_cancel_flight,
+    "update_seat": _test_update_seat,
+    "web_search": _test_web_search,
+    "modern_web_search": _test_modern_web_search,
+    "perplexity_web_search": _test_perplexity_web_search,
 }
 
 

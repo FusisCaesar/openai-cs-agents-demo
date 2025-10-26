@@ -10,7 +10,7 @@ export interface Agent {
   name: string
   description: string
   handoffs: string[]
-  tools: string[]
+  tools: Array<string | { name: string, agent_ref?: string }>
   /** List of input guardrail identifiers for this agent */
   input_guardrails: string[]
   /** Optional indicator this is the selected triage (master) agent */
